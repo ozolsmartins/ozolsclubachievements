@@ -1,103 +1,201 @@
-import Image from "next/image";
+// app/page.js
+import { headers } from 'next/headers';
 
-export default function Home() {
+export const dynamic = 'force-dynamic';
+
+function buildQuery(params) {
+  const clean = Object.fromEntries(
+      Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+  );
+  return new URLSearchParams(clean).toString();
+}
+
+export default async function Page({ searchParams }) {
+  const page   = searchParams?.page ?? '1';
+  const date   = searchParams?.date ?? '';
+  const lockId = searchParams?.lockId ?? '';
+  const limit  = searchParams?.limit ?? '50';
+
+  const qs = buildQuery({ page, date, lockId, limit });
+
+  // Absolute base URL for server-side fetch (Next 15/Turbopack)
+  const h = headers();
+  const host  = h.get('x-forwarded-host') ?? h.get('host');
+  const proto = h.get('x-forwarded-proto') ?? 'http';
+  const base  = `${proto}://${host}`;
+
+  let data, status = 200, errText = '';
+  try {
+    const res = await fetch(`${base}/api?${qs}`, { cache: 'no-store' });
+    status = res.status;
+    if (!res.ok) errText = await res.text();
+    else data = await res.json();
+  } catch (e) {
+    status = 0;
+    errText = String(e?.message || e);
+  }
+
+  if (!data) {
+    return (
+        <main className="p-6 space-y-3">
+          <h1 className="text-2xl font-semibold">Entries</h1>
+          <p>Failed to load entries.</p>
+          <pre className="text-xs bg-gray-100 p-3 rounded overflow-auto">
+{`status: ${status}
+error: ${errText}`}
+        </pre>
+        </main>
+    );
+  }
+
+  const { entries = [], pagination = {}, filters = {} } = data;
+  const totalPages = pagination.totalPages ?? 1;
+  const dayISO = filters?.date ? new Date(filters.date).toISOString().slice(0, 10) : '';
+
+  const linkWith = (patch) => {
+    const next = { page, date, lockId, limit, ...patch };
+    return `/?${buildQuery(next)}`;
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.js
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+      <main className="p-6 space-y-6">
+        <h1 className="text-2xl font-semibold">Entries</h1>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+        {/* Filters */}
+        <form action="/" method="get" className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="block text-sm">Date</label>
+            <input
+                type="date"
+                name="date"
+                defaultValue={dayISO || date}
+                className="border rounded px-3 py-1"
             />
-            Deploy now
-          </a>
+          </div>
+          <div>
+            <label className="block text-sm">Lock ID</label>
+            <select name="lockId" defaultValue={lockId} className="border rounded px-3 py-1">
+              <option value="">All</option>
+              {(filters?.availableLockIds ?? []).map((id) => (
+                  <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm">Per page</label>
+            <select name="limit" defaultValue={limit} className="border rounded px-3 py-1">
+              {[25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <button type="submit" className="px-4 py-2 rounded bg-black text-white">
+            Apply
+          </button>
+        </form>
+
+        {/* Quick date jump */}
+        <div className="flex gap-3">
+          {filters?.previousDateCounts && (
+              <a
+                  className="underline"
+                  href={linkWith({
+                    date: new Date(filters.previousDateCounts.date).toISOString().slice(0, 10),
+                    page: '1'
+                  })}
+              >
+                ← {new Date(filters.previousDateCounts.date).toLocaleDateString()} ({filters.previousDateCounts.count})
+              </a>
+          )}
+          {filters?.nextDateCounts && (
+              <a
+                  className="underline"
+                  href={linkWith({
+                    date: new Date(filters.nextDateCounts.date).toISOString().slice(0, 10),
+                    page: '1'
+                  })}
+              >
+                {new Date(filters.nextDateCounts.date).toLocaleDateString()} ({filters.nextDateCounts.count}) →
+              </a>
+          )}
+        </div>
+
+        {/* Summary */}
+        <div className="text-sm text-gray-600">
+          Showing page <strong>{pagination?.page}</strong> of <strong>{totalPages}</strong>, total{' '}
+          <strong>{pagination?.total}</strong> entries for{' '}
+          <strong>{dayISO ? new Date(dayISO).toLocaleDateString() : (date || 'today')}</strong>.
+        </div>
+
+        {/* Table */}
+        <div className="overflow-auto border rounded">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50">
+            <tr>
+              <th className="text-left p-2">Time</th>
+              <th className="text-left p-2">User</th>
+              <th className="text-left p-2">Full name</th>
+              <th className="text-left p-2">Lock</th>
+              <th className="text-left p-2">MAC</th>
+              <th className="text-left p-2">Type</th>
+              <th className="text-left p-2">Battery</th>
+            </tr>
+            </thead>
+            <tbody>
+            {entries.length === 0 && (
+                <tr>
+                  <td className="p-3" colSpan={7}>No entries found.</td>
+                </tr>
+            )}
+            {entries.map((e) => (
+                <tr key={e._id} className="border-t">
+                  <td className="p-2">{e.entryTime ? new Date(e.entryTime).toLocaleTimeString() : ''}</td>
+                  <td className="p-2">{e.userId || e.username}</td>
+                  <td className="p-2">{e.fullName || '—'}</td>
+                  <td className="p-2">{e.lockId}</td>
+                  <td className="p-2">{e.lockMac}</td>
+                  <td className="p-2">{e.recordType}</td>
+                  <td className="p-2">{e.electricQuantity ?? '—'}</td>
+                </tr>
+            ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        <div className="flex items-center gap-2">
           <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+              aria-disabled={Number(page) <= 1}
+              className={`px-3 py-1 rounded border ${Number(page) <= 1 ? 'pointer-events-none opacity-50' : ''}`}
+              href={linkWith({ page: String(Math.max(1, Number(page) - 1)) })}
           >
-            Read our docs
+            Prev
+          </a>
+          <span className="text-sm">
+          Page {pagination?.page} / {totalPages}
+        </span>
+          <a
+              aria-disabled={Number(page) >= totalPages}
+              className={`px-3 py-1 rounded border ${Number(page) >= totalPages ? 'pointer-events-none opacity-50' : ''}`}
+              href={linkWith({ page: String(Math.min(totalPages, Number(page) + 1)) })}
+          >
+            Next
           </a>
         </div>
+
+        {/* Per-lock counts */}
+        {filters?.entryCounts && (
+            <div className="text-sm text-gray-700">
+              <h2 className="font-medium mb-1">Entries by lock (selected day)</h2>
+              <ul className="list-disc ml-5">
+                {Object.entries(filters.entryCounts).map(([id, count]) => (
+                    <li key={id}>
+                      <a className="underline" href={linkWith({ lockId: id, page: '1' })}>
+                        {id}
+                      </a>: {count}
+                    </li>
+                ))}
+              </ul>
+            </div>
+        )}
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
   );
 }
