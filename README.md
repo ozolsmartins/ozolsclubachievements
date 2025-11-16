@@ -99,4 +99,4 @@ Roadmap ideas
 - CSV export and charting
 
 License
-- Proprietary to ozols.club (adjust as appropriate for your distribution needs)
+- Proprietary to ozols.club
