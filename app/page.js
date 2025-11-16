@@ -177,7 +177,7 @@ error: ${errText}`}
 
   return (
       <main className="p-6 space-y-6">
-        <h1 className="text-2xl font-semibold">Entries</h1>
+        <h1 className="text-2xl font-semibold">Achievements</h1>
 
         {/* Filters */}
         <form action="/" method="get" className="flex flex-wrap gap-3 items-end">
