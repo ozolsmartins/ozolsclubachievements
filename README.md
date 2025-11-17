@@ -18,6 +18,8 @@ Core features
 - Global Leaderboard (lifetime): toggle on/off; same categories as monthly but for all‑time
 - Deterministic pagination and stable ordering
 - Timezone‑aware computations for hour/day logic
+- Seasons & progression: pick a predefined Season to see seasonal standings; per‑user season progress includes points (distinct active days), rank, streaks, and level
+ - Analytics & charts: trend charts (entries/day, DAU/WAU/MAU), retention and streak distributions, cohort analysis (new vs returning by month); CSV and PNG export per chart
 
 How calculations work (high level)
 - Distinct active days (month/global top users): a user is counted once per day with activity
@@ -31,11 +33,17 @@ Screens and behavior
 - Month view also shows a Leaderboard block (user‑centric)
 - Global Leaderboard can be toggled under the monthly leaderboard and appears instantly without pressing Apply
 - Searching by user switches the view into a profile: lifetime stats + achievements, plus the entries table for the selected range; leaderboards are hidden in this mode
+ - Season mode: selecting a Season switches the view to that season’s date range (disables date/range pickers); the leaderboard shows “this season” and user search reveals a “Season progress” box
 
 Tech stack
 - Next.js App Router (server components)
 - Tailwind (via @import tailwindcss in app/globals.css)
 - MongoDB with Mongoose (see lib/mongodb.js)
+
+Testing
+- Unit tests use Vitest. Pure helper functions are in lib/utils.js to enable isolated tests.
+- Run tests: npm test
+- API contract tests: see tests/api.contract.test.js — validates response shape, headers (X-Request-ID), and rate limiting behavior using mocks.
 
 Project structure (key files)
 - app/page.js — Main UI: filters, achievements, leaderboards, table, pagination
@@ -44,6 +52,8 @@ Project structure (key files)
 - app/components/AutoSubmitSelect.js — Select that auto‑submits its enclosing form on change
 - app/components/AutoSubmitCheckbox.js — Checkbox that auto‑submits (used for Global Leaderboard toggle)
 - lib/mongodb.js — Mongo connection helper using MONGO_URI
+ - lib/utils.js — Pure helpers (buildQuery, formatLocalYMD, computeAchievements, formatDurationHM) with unit tests
+ - tests/utils.test.js — Vitest unit tests for helpers
 
 Environment and setup
 1) Requirements
@@ -78,6 +88,7 @@ Query parameters (UI/API)
 - lockId: string (optional)
 - userId: string (username; case‑insensitive exact match)
 - showGlobal: "1" to show lifetime leaderboard (only visible in Month mode, not in user search)
+ - season: string (season key). When present, it overrides date/period and uses the season’s start/end window. Treated like Month for user‑centric metrics.
 
 Timezone behavior
 - All hour‑based and day‑bucketing calculations in the API are timezone‑aware and use the server’s local timezone. This keeps UI and backend aligned for 08:00/22:00 logic and distinct‑day counting.
@@ -87,11 +98,25 @@ Design choices and constraints
 - Lock‑related metrics are not shown in Month mode and are not part of leaderboards there
 - Deterministic sorts with tie‑breaks ensure stable pagination and repeatable results
 - The date input prevents selecting future dates; Month view uses a month‑only input
+ - When a Season is active, date/range navigation is suppressed and the view labels use “this season”
+
+Seasons & progression
+- Season catalog is currently hard‑coded in the API (see app/api/route.js, SEASONS array). Each season has key, name, startAt, endAt.
+- Selecting a season applies that time window to all queries and aggregates; the Achievements heading switches to “this season,” and the Leaderboard shows the season standings.
+- Progression model (per user within the selected season):
+  - Points = number of distinct active days during the season
+  - Rank = position by points among all users in the season
+  - Streaks = current and longest consecutive day streaks within the season
+  - Levels = simple thresholds at 1/5/10/20/30 points, shown with the next milestone
 
 Troubleshooting
 - Ensure MONGO_URI is set and reachable; the server will throw if missing
 - If times look off by a day or hour, confirm the server’s timezone and data timestamps
 - Large datasets: MongoDB aggregations are optimized but indexes on entryTime/username/lockId will help at scale
+ - PostCSS/Tailwind: Next 15 requires object-map plugins in postcss.config.mjs
+
+Operations & secrets
+- See docs/SECRETS.md for environment variables, rotation, and platform guidance
 
 Roadmap ideas
 - User‑configurable timezone via env var

@@ -1,8 +1,31 @@
 // app/api/route.js
 import mongoose from 'mongoose';
 import { NextResponse } from 'next/server';
+import { createLogger, getRequestIdFromHeaders, timed } from '@/lib/logger';
+import { rateLimitKeyFromRequest, rateLimitConsume, getRateLimitConfig } from '@/lib/rateLimit';
 import { startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns';
 import { connectToDatabase } from '@/lib/mongodb';
+
+// In-memory Seasons catalog (can be moved to DB later)
+// Adjust keys and dates to your real seasons
+const SEASONS = [
+    {
+        key: '2025Q4',
+        name: 'Season Q4 2025',
+        startAt: new Date(2025, 9, 1), // Oct 1, 2025
+        endAt: new Date(2025, 11, 31, 23, 59, 59, 999), // Dec 31, 2025
+    },
+    {
+        key: '2025Q3',
+        name: 'Season Q3 2025',
+        startAt: new Date(2025, 6, 1), // Jul 1, 2025
+        endAt: new Date(2025, 8, 30, 23, 59, 59, 999), // Sep 30, 2025
+    },
+];
+
+// Primary lock for day-counting logic (distinct active days, first-of-day calculations)
+// Refactor requirement: only consider the first entry for this specific lock when counting days
+const PRIMARY_LOCK = '19228015';
 
 // ----- Entry model only (no Customer usage at all) -----
 const Entry =
@@ -23,7 +46,23 @@ const Entry =
     );
 
 export async function GET(request) {
+    // Generate request ID and logger up-front so we can use in any early returns
+    const reqId = getRequestIdFromHeaders(request.headers) || (globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2));
+    const log = createLogger({ requestId: reqId, route: 'GET /api' });
+
+    // Basic token-bucket rate limiting per IP
+    const rlKey = rateLimitKeyFromRequest(request, 'api');
+    const rl = rateLimitConsume(rlKey, getRateLimitConfig());
+    if (!rl.ok) {
+        log.warn('rate_limited', { key: rlKey, retryAfter: rl.retryAfter });
+        const resp = NextResponse.json({ error: 'Too Many Requests' }, { status: 429 });
+        resp.headers.set('Retry-After', String(rl.retryAfter));
+        resp.headers.set('X-Request-ID', reqId);
+        return resp;
+    }
+
     try {
+        log.info('request_start');
         await connectToDatabase();
 
         const { searchParams } = new URL(request.url);
@@ -32,7 +71,9 @@ export async function GET(request) {
         const lockId = searchParams.get('lockId') || '';
         const userId = (searchParams.get('userId') || '').trim(); // used as username filter
         const dateParam = searchParams.get('date');
-        const period = (searchParams.get('period') || 'day').toLowerCase() === 'month' ? 'month' : 'day';
+        let period = (searchParams.get('period') || 'day').toLowerCase() === 'month' ? 'month' : 'day';
+        const seasonKey = (searchParams.get('season') || '').trim();
+        const activeSeason = SEASONS.find(s => s.key.toLowerCase() === seasonKey.toLowerCase());
         // Parse YYYY-MM-DD as a LOCAL date to avoid UTC shifting the day
         let date;
         if (dateParam) {
@@ -55,9 +96,17 @@ export async function GET(request) {
             date = new Date();
         }
 
-        // Determine time window based on period
-        const rangeStart = period === 'month' ? startOfMonth(date) : startOfDay(date);
-        const rangeEnd   = period === 'month' ? endOfMonth(date)   : endOfDay(date);
+        // Determine time window based on period or season
+        let rangeStart = period === 'month' ? startOfMonth(date) : startOfDay(date);
+        let rangeEnd   = period === 'month' ? endOfMonth(date)   : endOfDay(date);
+        let seasonActive = false;
+        if (activeSeason) {
+            rangeStart = activeSeason.startAt;
+            rangeEnd = activeSeason.endAt;
+            seasonActive = true;
+            // Treat season like month for user-centric aggregates
+            period = 'month';
+        }
 
         // Use the server's local timezone for all MongoDB date part operations
         // MongoDB date operators default to UTC; providing timezone keeps logic consistent
@@ -77,59 +126,60 @@ export async function GET(request) {
         };
 
         // Fetch paginated entries
-        const entries = await Entry.find(query)
+        const entries = await timed(log, 'find_entries', () => Entry.find(query)
             // Ensure deterministic ordering even when entryTime values are equal
             .sort({ entryTime: -1, _id: -1 })
             .skip((page - 1) * limit)
             .limit(limit)
-            .lean();
+            .lean());
 
         // Total for pagination
-        const total = await Entry.countDocuments(query);
+        const total = await timed(log, 'count_total', () => Entry.countDocuments(query));
 
         // Distinct lock IDs (for filters)
-        const availableLockIds = await Entry.distinct('lockId');
+        const availableLockIds = await timed(log, 'distinct_lockIds', () => Entry.distinct('lockId'));
 
-        // Counts by lockId for the selected day (aggregate on Entry only)
-        const countsAgg = await Entry.aggregate([
-            { $match: { entryTime: { $gte: rangeStart, $lte: rangeEnd } } },
+        // Counts by lockId for the selected range and current filters (consistent with query)
+        const countsAgg = await timed(log, 'agg_counts_by_lock', () => Entry.aggregate([
+            { $match: query },
             { $group: { _id: '$lockId', count: { $sum: 1 } } },
-        ]);
+        ]));
         const entryCounts = Object.fromEntries(countsAgg.map(d => [d._id, d.count]));
 
-        // Previous date with entries
-        const previousDateEntry = await Entry.findOne(
-            { entryTime: { $lt: rangeStart } },
-            { entryTime: 1 }
-        )
-            // Tie-break by _id for stable selection
-            .sort({ entryTime: -1, _id: -1 });
-
+        // Previous/Next date with entries (disabled in season mode)
         let previousDateCounts = null;
-        if (previousDateEntry?.entryTime) {
-            const prevStart = period === 'month' ? startOfMonth(previousDateEntry.entryTime) : startOfDay(previousDateEntry.entryTime);
-            const prevEnd   = period === 'month' ? endOfMonth(previousDateEntry.entryTime)   : endOfDay(previousDateEntry.entryTime);
-            const prevTotal = await Entry.countDocuments({ entryTime: { $gte: prevStart, $lte: prevEnd } });
-            previousDateCounts = { date: prevStart, count: prevTotal };
-        }
-
-        // Next date with entries
-        const nextDateEntry = await Entry.findOne(
-            { entryTime: { $gt: rangeEnd } },
-            { entryTime: 1 }
-        )
-            // Tie-break by _id for stable selection
-            .sort({ entryTime: 1, _id: 1 });
-
         let nextDateCounts = null;
-        if (nextDateEntry?.entryTime) {
-            const nextStart = period === 'month' ? startOfMonth(nextDateEntry.entryTime) : startOfDay(nextDateEntry.entryTime);
-            const nextEnd   = period === 'month' ? endOfMonth(nextDateEntry.entryTime)   : endOfDay(nextDateEntry.entryTime);
-            const nextTotal = await Entry.countDocuments({ entryTime: { $gte: nextStart, $lte: nextEnd } });
-            nextDateCounts = { date: nextStart, count: nextTotal };
+        if (!seasonActive) {
+            const previousDateEntry = await timed(log, 'find_prev_date', () => Entry.findOne(
+                { entryTime: { $lt: rangeStart } },
+                { entryTime: 1 }
+            )
+                // Tie-break by _id for stable selection
+                .sort({ entryTime: -1, _id: -1 }));
+
+            if (previousDateEntry?.entryTime) {
+                const prevStart = period === 'month' ? startOfMonth(previousDateEntry.entryTime) : startOfDay(previousDateEntry.entryTime);
+                const prevEnd   = period === 'month' ? endOfMonth(previousDateEntry.entryTime)   : endOfDay(previousDateEntry.entryTime);
+                const prevTotal = await Entry.countDocuments({ entryTime: { $gte: prevStart, $lte: prevEnd } });
+                previousDateCounts = { date: prevStart, count: prevTotal };
+            }
+
+            const nextDateEntry = await timed(log, 'find_next_date', () => Entry.findOne(
+                { entryTime: { $gt: rangeEnd } },
+                { entryTime: 1 }
+            )
+                // Tie-break by _id for stable selection
+                .sort({ entryTime: 1, _id: 1 }));
+
+            if (nextDateEntry?.entryTime) {
+                const nextStart = period === 'month' ? startOfMonth(nextDateEntry.entryTime) : startOfDay(nextDateEntry.entryTime);
+                const nextEnd   = period === 'month' ? endOfMonth(nextDateEntry.entryTime)   : endOfDay(nextDateEntry.entryTime);
+                const nextTotal = await Entry.countDocuments({ entryTime: { $gte: nextStart, $lte: nextEnd } });
+                nextDateCounts = { date: nextStart, count: nextTotal };
+            }
         }
 
-        // Day/Month-level aggregates across ALL pages (for the selected range and filters)
+        // Day/Month/Season-level aggregates across ALL pages (for the selected range and filters)
         const aggPipelines = [
             { $match: query },
             {
@@ -142,6 +192,8 @@ export async function GET(request) {
                     mostActiveUser: (
                         period === 'month'
                             ? [
+                                // Only count distinct days from the primary lock
+                                { $match: { lockId: PRIMARY_LOCK } },
                                 { $project: { username: 1, day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
                                 { $group: { _id: { u: '$username', d: '$day' } } },
                                 { $group: { _id: '$_id.u', count: { $sum: 1 } } },
@@ -154,7 +206,7 @@ export async function GET(request) {
                                 { $limit: 1 },
                               ]
                     ),
-                    // locks/hour are not part of month achievements; still compute for day for compatibility
+                    // locks/hour are not part of month/season achievements; still compute for day for compatibility
                     mostUsedLock: (
                         period === 'month'
                             ? []
@@ -183,7 +235,7 @@ export async function GET(request) {
             },
         ];
 
-        const aggResult = await Entry.aggregate(aggPipelines);
+        const aggResult = await timed(log, 'agg_achievements', () => Entry.aggregate(aggPipelines));
         const facet = aggResult?.[0] || {};
         const uniqueUsers = facet.uniqueUsers?.[0]?.count ?? 0;
         const mostActiveUser = facet.mostActiveUser?.[0]
@@ -199,7 +251,7 @@ export async function GET(request) {
         const lastEntryTime = facet.span?.[0]?.last ?? null;
 
         // Leaderboards for current range
-        const leaderboardAgg = await Entry.aggregate([
+        const leaderboardAgg = await timed(log, 'agg_leaderboards', () => Entry.aggregate([
             { $match: { entryTime: { $gte: rangeStart, $lte: rangeEnd }, ...(lockId ? { lockId } : {}) } },
             {
                 $facet: (
@@ -207,6 +259,7 @@ export async function GET(request) {
                         ? {
                             // Users ranked by number of distinct active days during the month
                             topUsers: [
+                                { $match: { lockId: PRIMARY_LOCK } },
                                 { $project: { username: 1, day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
                                 { $group: { _id: { u: '$username', d: '$day' } } },
                                 { $group: { _id: '$_id.u', count: { $sum: 1 } } },
@@ -215,6 +268,7 @@ export async function GET(request) {
                             ],
                             // Early birds by number of days where the FIRST entry was before 08:00
                             topEarlyBirds: [
+                                { $match: { lockId: PRIMARY_LOCK } },
                                 { $addFields: { day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
                                 { $sort: { entryTime: 1, _id: 1 } },
                                 { $group: { _id: { u: '$username', d: '$day' }, firstTime: { $first: '$entryTime' } } },
@@ -228,6 +282,7 @@ export async function GET(request) {
                             // Implementation: restrict to entries with hour >= 22, then pick the earliest (first) such entry per user-day,
                             // then count days per user.
                             topNightOwls: [
+                                { $match: { lockId: PRIMARY_LOCK } },
                                 { $addFields: { 
                                     day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } },
                                     hour: { $hour: { date: '$entryTime', timezone: timeZone } }
@@ -241,6 +296,7 @@ export async function GET(request) {
                             ],
                             // Longest streak in days per user within the month (consecutive active days)
                             topLongestStreaks: [
+                                { $match: { lockId: PRIMARY_LOCK } },
                                 // Truncate to local day to build day Date values
                                 { $addFields: { day: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
                                 // Distinct user-day pairs
@@ -350,7 +406,7 @@ export async function GET(request) {
                           }
                 ),
             },
-        ]);
+        ]));
         const lbFacet = leaderboardAgg?.[0] || {};
         const leaderboards = {
             topUsers: (lbFacet.topUsers || []).map(x => ({ id: x._id, count: x.count })),
@@ -360,12 +416,195 @@ export async function GET(request) {
             topLongestStreaks: (lbFacet.topLongestStreaks || []).map(x => ({ id: x._id, count: x.count })),
         };
 
+        // ----- Analytics (trends, retention/streak distributions, cohorts) -----
+        // Respect current filters (lockId, userId if provided) and the current range window.
+        // Charts will be rendered only when not searching a single user in the UI, but we still compute here
+        // based on the current filters for consistency.
+        // Analytics must be based ONLY on the primary lock, regardless of the UI-selected lock filter
+        const analyticsQuery = {
+            ...query,
+            lockId: PRIMARY_LOCK,
+        };
+        const analyticsAgg = await timed(log, 'agg_analytics', () => Entry.aggregate([
+            { $match: analyticsQuery },
+            {
+                $facet: {
+                    // Entries per day (counts)
+                    entriesPerDay: [
+                        { $project: { day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
+                        { $group: { _id: '$day', count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                    // Entries per hour (for Day mode visualizations)
+                    entriesPerHour: [
+                        { $project: { h: { $hour: { date: '$entryTime', timezone: timeZone } } } },
+                        { $group: { _id: '$h', count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                    // Distinct active users per day (DAU series)
+                    dauPerDay: [
+                        { $project: { u: '$username', d: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$u', d: '$d' } } },
+                        { $group: { _id: '$_id.d', count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                    // Distinct active users per hour (for Day mode)
+                    dauPerHour: [
+                        { $project: { u: '$username', h: { $hour: { date: '$entryTime', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$u', h: '$h' } } },
+                        { $group: { _id: '$_id.h', count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                    // Distinct active users per week (WAU series)
+                    wauByWeek: [
+                        { $project: { u: '$username', w: { $dateTrunc: { date: '$entryTime', unit: 'week', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$u', w: '$w' } } },
+                        { $group: { _id: '$_id.w', count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                    // Distinct active users per month (MAU series)
+                    mauByMonth: [
+                        { $project: { u: '$username', m: { $dateTrunc: { date: '$entryTime', unit: 'month', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$u', m: '$m' } } },
+                        { $group: { _id: '$_id.m', count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                    // Retention distribution: number of users by active days within the range
+                    retention: [
+                        { $project: { u: '$username', d: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$u', d: '$d' } } },
+                        { $group: { _id: '$_id.u', days: { $sum: 1 } } },
+                        { $project: {
+                            bucket: {
+                                $switch: {
+                                    branches: [
+                                        { case: { $eq: ['$days', 1] }, then: '1' },
+                                        { case: { $and: [ { $gte: ['$days', 2] }, { $lte: ['$days', 3] } ] }, then: '2-3' },
+                                        { case: { $and: [ { $gte: ['$days', 4] }, { $lte: ['$days', 7] } ] }, then: '4-7' },
+                                        { case: { $and: [ { $gte: ['$days', 8] }, { $lte: ['$days', 15] } ] }, then: '8-15' },
+                                    ],
+                                    default: '16+',
+                                }
+                            }
+                        } },
+                        { $group: { _id: '$bucket', count: { $sum: 1 } } },
+                    ],
+                    // Streak distribution: per-user longest streak within the range, bucketed
+                    streaks: [
+                        { $addFields: { day: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$username', d: '$day' } } },
+                        { $sort: { '_id.u': 1, '_id.d': 1 } },
+                        { $group: { _id: '$_id.u', days: { $push: '$_id.d' } } },
+                        { $project: {
+                            longest: {
+                                $let: {
+                                    vars: { arr: '$days' },
+                                    in: {
+                                        $let: {
+                                            vars: {
+                                                res: {
+                                                    $reduce: {
+                                                        input: '$$arr',
+                                                        initialValue: { last: null, curr: 0, best: 0 },
+                                                        in: {
+                                                            $let: {
+                                                                vars: {
+                                                                    nextCurr: {
+                                                                        $cond: [
+                                                                            { $and: [ { $ne: ['$$value.last', null] }, { $eq: [ { $divide: [ { $subtract: ['$$this', '$$value.last'] }, 86400000 ] }, 1 ] } ] },
+                                                                            { $add: ['$$value.curr', 1] },
+                                                                            1
+                                                                        ]
+                                                                    }
+                                                                },
+                                                                in: {
+                                                                    last: '$$this',
+                                                                    curr: '$$nextCurr',
+                                                                    best: { $cond: [ { $gt: ['$$nextCurr', '$$value.best'] }, '$$nextCurr', '$$value.best' ] }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            in: '$$res.best'
+                                        }
+                                    }
+                                }
+                            }
+                        } },
+                        { $project: {
+                            bucket: {
+                                $switch: {
+                                    branches: [
+                                        { case: { $eq: ['$longest', 1] }, then: '1' },
+                                        { case: { $and: [ { $gte: ['$longest', 2] }, { $lte: ['$longest', 3] } ] }, then: '2-3' },
+                                        { case: { $and: [ { $gte: ['$longest', 4] }, { $lte: ['$longest', 7] } ] }, then: '4-7' },
+                                        { case: { $and: [ { $gte: ['$longest', 8] }, { $lte: ['$longest', 15] } ] }, then: '8-15' },
+                                    ],
+                                    default: '16+',
+                                }
+                            }
+                        } },
+                        { $group: { _id: '$bucket', count: { $sum: 1 } } },
+                    ],
+                }
+            }
+        ]));
+
+        const aFacet = analyticsAgg?.[0] || {};
+        const entriesPerDay = (aFacet.entriesPerDay || []).map(x => ({ day: x._id, count: x.count }));
+        const entriesPerHour = (aFacet.entriesPerHour || []).map(x => ({ hour: x._id, count: x.count }));
+        const dauPerDay = (aFacet.dauPerDay || []).map(x => ({ day: x._id, count: x.count }));
+        const dauPerHour = (aFacet.dauPerHour || []).map(x => ({ hour: x._id, count: x.count }));
+        const wauByWeek = (aFacet.wauByWeek || []).map(x => ({ week: x._id, count: x.count }));
+        const mauByMonth = (aFacet.mauByMonth || []).map(x => ({ month: x._id, count: x.count }));
+        const retentionBucketsRaw = Object.fromEntries((aFacet.retention || []).map(x => [x._id, x.count]));
+        const streakBucketsRaw = Object.fromEntries((aFacet.streaks || []).map(x => [x._id, x.count]));
+        const retentionBuckets = { '1': 0, '2-3': 0, '4-7': 0, '8-15': 0, '16+': 0, ...retentionBucketsRaw };
+        const streakBuckets = { '1': 0, '2-3': 0, '4-7': 0, '8-15': 0, '16+': 0, ...streakBucketsRaw };
+
+        // Cohort: new vs returning by month for months within [rangeStart, rangeEnd]
+        // Compute users' first month (respecting lockId filter but across all time), and distinct users per month in the selected range.
+        const cohortAgg = await timed(log, 'agg_cohorts', () => Entry.aggregate([
+            {
+                $facet: {
+                    firstMonthPerUser: [
+                        { $match: { lockId: PRIMARY_LOCK } },
+                        { $project: { u: '$username', m: { $dateToString: { format: '%Y-%m', date: '$entryTime', timezone: timeZone } } } },
+                        { $sort: { m: 1 } },
+                        { $group: { _id: '$u', first: { $first: '$m' } } },
+                    ],
+                    monthlyDistinctInRange: [
+                        { $match: { entryTime: { $gte: rangeStart, $lte: rangeEnd }, lockId: PRIMARY_LOCK } },
+                        { $project: { u: '$username', m: { $dateToString: { format: '%Y-%m', date: '$entryTime', timezone: timeZone } } } },
+                        { $group: { _id: { u: '$u', m: '$m' } } },
+                        { $group: { _id: '$_id.m', users: { $addToSet: '$_id.u' }, count: { $sum: 1 } } },
+                        { $sort: { _id: 1 } },
+                    ],
+                }
+            }
+        ]));
+
+        const cFacet = cohortAgg?.[0] || {};
+        const firstMonthMap = new Map((cFacet.firstMonthPerUser || []).map(x => [x._id, x.first]));
+        const cohortByMonth = (cFacet.monthlyDistinctInRange || []).map((m) => {
+            const users = m.users || [];
+            let newCount = 0;
+            for (const u of users) {
+                if (firstMonthMap.get(u) === m._id) newCount += 1;
+            }
+            const total = users.length;
+            return { month: m._id, new: newCount, returning: Math.max(0, total - newCount) };
+        });
+
         // Global leaderboards (lifetime, all entries, user-centric only)
-        const globalLbAgg = await Entry.aggregate([
+        const globalLbAgg = await timed(log, 'agg_global_leaderboards', () => Entry.aggregate([
             {
                 $facet: {
                     // Distinct active days across all time per user
                     topUsers: [
+                        { $match: { lockId: PRIMARY_LOCK } },
                         { $project: { username: 1, day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
                         { $group: { _id: { u: '$username', d: '$day' } } },
                         { $group: { _id: '$_id.u', count: { $sum: 1 } } },
@@ -374,6 +613,7 @@ export async function GET(request) {
                     ],
                     // Days where FIRST entry was before 08:00
                     topEarlyBirds: [
+                        { $match: { lockId: PRIMARY_LOCK } },
                         { $addFields: { day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
                         { $sort: { entryTime: 1, _id: 1 } },
                         { $group: { _id: { u: '$username', d: '$day' }, firstTime: { $first: '$entryTime' } } },
@@ -385,6 +625,7 @@ export async function GET(request) {
                     ],
                     // Days where FIRST entry AFTER 22:00 exists
                     topNightOwls: [
+                        { $match: { lockId: PRIMARY_LOCK } },
                         { $addFields: { 
                             day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } },
                             hour: { $hour: { date: '$entryTime', timezone: timeZone } }
@@ -398,6 +639,7 @@ export async function GET(request) {
                     ],
                     // Longest consecutive active day streak across lifetime
                     topLongestStreaks: [
+                        { $match: { lockId: PRIMARY_LOCK } },
                         { $addFields: { day: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
                         { $group: { _id: { u: '$username', d: '$day' } } },
                         { $sort: { '_id.u': 1, '_id.d': 1 } },
@@ -458,7 +700,7 @@ export async function GET(request) {
                     ],
                 }
             }
-        ]);
+        ]));
         const glbFacet = globalLbAgg?.[0] || {};
         const globalLeaderboards = {
             topUsers: (glbFacet.topUsers || []).map(x => ({ id: x._id, count: x.count })),
@@ -475,22 +717,22 @@ export async function GET(request) {
             const usernameRegex = new RegExp(`^${escaped}$`, 'i');
 
             // A canonical display username from any matching doc
-            const sampleUserDoc = await Entry.findOne({ username: { $regex: usernameRegex } }, { username: 1 })
+            const sampleUserDoc = await timed(log, 'find_sample_user', () => Entry.findOne({ username: { $regex: usernameRegex } }, { username: 1 })
                 .sort({ _id: 1 })
-                .lean();
+                .lean());
 
             const now = new Date();
             const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-            const lifetimeAgg = await Entry.aggregate([
+            const lifetimeAgg = await timed(log, 'agg_user_profile', () => Entry.aggregate([
                 { $match: { username: { $regex: usernameRegex } } },
                 {
                     $facet: {
+                        // General stats (first/last seen, locks, early/night flags)
                         stats: [
                             {
                                 $group: {
                                     _id: null,
-                                    total: { $sum: 1 },
                                     first: { $min: '$entryTime' },
                                     last: { $max: '$entryTime' },
                                     locks: { $addToSet: '$lockId' },
@@ -509,7 +751,6 @@ export async function GET(request) {
                             {
                                 $project: {
                                     _id: 0,
-                                    total: 1,
                                     first: 1,
                                     last: 1,
                                     uniqueLocks: { $size: '$locks' },
@@ -518,11 +759,21 @@ export async function GET(request) {
                                 },
                             },
                         ],
-                        recent30: [
-                            { $match: { entryTime: { $gte: thirtyDaysAgo } } },
+                        // Visits (all time) based on distinct days with PRIMARY_LOCK activity
+                        visitsDaysPrimary: [
+                            { $match: { lockId: PRIMARY_LOCK } },
+                            { $project: { d: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
+                            { $group: { _id: '$d' } },
                             { $count: 'count' },
                         ],
-                        // Lifetime longest streak in days for this user
+                        // Recent 30 days visits (for Active This Month) based on PRIMARY_LOCK distinct days
+                        recent30DaysPrimary: [
+                            { $match: { lockId: PRIMARY_LOCK, entryTime: { $gte: thirtyDaysAgo } } },
+                            { $project: { d: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
+                            { $group: { _id: '$d' } },
+                            { $count: 'count' },
+                        ],
+                        // Lifetime longest streak in days for this user (any lock)
                         longestStreak: [
                             { $addFields: { day: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
                             { $group: { _id: '$day' } },
@@ -545,10 +796,7 @@ export async function GET(request) {
                                                                     vars: {
                                                                         nextCurr: {
                                                                             $cond: [
-                                                                                { $and: [
-                                                                                    { $ne: ['$$value.last', null] },
-                                                                                    { $eq: [ { $divide: [ { $subtract: ['$$this', '$$value.last'] }, 86400000 ] }, 1 ] }
-                                                                                ] },
+                                                                                { $and: [ { $ne: ['$$value.last', null] }, { $eq: [ { $divide: [ { $subtract: ['$$this', '$$value.last'] }, 86400000 ] }, 1 ] } ] },
                                                                                 { $add: ['$$value.curr', 1] },
                                                                                 1
                                                                             ]
@@ -573,15 +821,16 @@ export async function GET(request) {
                         ],
                     },
                 },
-            ]);
+            ]));
 
             const lf = lifetimeAgg?.[0] || {};
             const stats = lf.stats?.[0] || null;
-            const recent30 = lf.recent30?.[0]?.count || 0;
+            const visitsAllTime = lf.visitsDaysPrimary?.[0]?.count || 0;
+            const recent30 = lf.recent30DaysPrimary?.[0]?.count || 0;
             const lifetimeStreak = lf.longestStreak?.[0]?.count || 0;
 
             if (stats) {
-                const total = stats.total || 0;
+                const total = visitsAllTime; // redefine: visits = distinct PRIMARY_LOCK days
                 const uniqueLocks = stats.uniqueLocks || 0;
                 const first = stats.first || null;
                 const last = stats.last || null;
@@ -590,9 +839,9 @@ export async function GET(request) {
                 const activeThisMonth = recent30 >= 5;
 
                 const achievements = [];
-                if (total >= 10) achievements.push({ key: 'milestone_10', title: 'Visitor I', description: '10+ visits' });
-                if (total >= 50) achievements.push({ key: 'milestone_50', title: 'Visitor II', description: '50+ visits' });
-                if (total >= 100) achievements.push({ key: 'milestone_100', title: 'Visitor III', description: '100+ visits' });
+                if (total >= 10) achievements.push({ key: 'milestone_10', title: 'Visitor I', description: '10+ visits (distinct days on primary lock)' });
+                if (total >= 50) achievements.push({ key: 'milestone_50', title: 'Visitor II', description: '50+ visits (distinct days on primary lock)' });
+                if (total >= 100) achievements.push({ key: 'milestone_100', title: 'Visitor III', description: '100+ visits (distinct days on primary lock)' });
                 if (early) achievements.push({ key: 'early_bird', title: 'Early Bird', description: 'Visited before 08:00' });
                 if (night) achievements.push({ key: 'night_owl', title: 'Night Owl', description: 'Visited at or after 22:00' });
                 if (activeThisMonth) achievements.push({ key: 'active_month', title: 'Active This Month', description: '5+ visits in the last 30 days' });
@@ -611,8 +860,107 @@ export async function GET(request) {
             }
         }
 
+        // ----- Season progression (per-user in active season) -----
+        let userSeasonProgress = null;
+        if (seasonActive) {
+            // Standings: distinct active days per user within the season window
+            const standingsAgg = await timed(log, 'agg_season_standings', () => Entry.aggregate([
+                { $match: { entryTime: { $gte: rangeStart, $lte: rangeEnd }, lockId: PRIMARY_LOCK } },
+                { $project: { username: 1, day: { $dateToString: { format: '%Y-%m-%d', date: '$entryTime', timezone: timeZone } } } },
+                { $group: { _id: { u: '$username', d: '$day' } } },
+                { $group: { _id: '$_id.u', count: { $sum: 1 } } },
+                { $sort: { count: -1, _id: 1 } },
+            ]));
+
+            const standings = standingsAgg.map((x) => ({ user: x._id, points: x.count }));
+
+            if (userId) {
+                // Find canonical username casing
+                const target = standings.find(s => s.user.toLowerCase() === userId.toLowerCase());
+                const points = target?.points || 0;
+                const rank = target ? (standings.findIndex(s => s.user === target.user) + 1) : null;
+
+                // Current and longest streak for this user within season
+                const streakAgg = await timed(log, 'agg_season_streak_user', () => Entry.aggregate([
+                    { $match: { entryTime: { $gte: rangeStart, $lte: rangeEnd }, lockId: PRIMARY_LOCK, username: { $regex: new RegExp(`^${userId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } } },
+                    { $addFields: { day: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
+                    { $group: { _id: '$day' } },
+                    { $sort: { _id: 1 } },
+                    { $group: { _id: null, days: { $push: '$_id' } } },
+                    { $project: {
+                        _id: 0,
+                        longest: {
+                            $let: {
+                                vars: { arr: '$days' },
+                                in: {
+                                    $let: {
+                                        vars: {
+                                            res: {
+                                                $reduce: {
+                                                    input: '$$arr',
+                                                    initialValue: { last: null, curr: 0, best: 0 },
+                                                    in: {
+                                                        $let: {
+                                                            vars: {
+                                                                nextCurr: {
+                                                                    $cond: [
+                                                                        { $and: [ { $ne: ['$$value.last', null] }, { $eq: [ { $divide: [ { $subtract: ['$$this', '$$value.last'] }, 86400000 ] }, 1 ] } ] },
+                                                                        { $add: ['$$value.curr', 1] },
+                                                                        1
+                                                                    ]
+                                                                }
+                                                            },
+                                                            in: {
+                                                                last: '$$this',
+                                                                curr: '$$nextCurr',
+                                                                best: { $cond: [ { $gt: ['$$nextCurr', '$$value.best'] }, '$$nextCurr', '$$value.best' ] }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        in: '$$res'
+                                    }
+                                }
+                            }
+                        }
+                    } }
+                ]));
+
+                const streakObj = streakAgg?.[0]?.longest || { curr: 0, best: 0 };
+                const longestStreakDaysSeason = streakObj.best || 0;
+                const currentStreakDaysSeason = streakObj.curr || 0; // approximate current run length
+
+                // Simple level thresholds based on points (distinct active days)
+                const levels = [
+                    { level: 1, at: 1 },
+                    { level: 2, at: 5 },
+                    { level: 3, at: 10 },
+                    { level: 4, at: 20 },
+                    { level: 5, at: 30 },
+                ];
+                let currentLevel = 0;
+                let nextAt = null;
+                for (const l of levels) {
+                    if (points >= l.at) currentLevel = l.level; else { nextAt = l.at; break; }
+                }
+                if (!nextAt) nextAt = null;
+
+                userSeasonProgress = {
+                    season: { key: activeSeason.key, name: activeSeason.name, startAt: activeSeason.startAt, endAt: activeSeason.endAt },
+                    points,
+                    rank,
+                    currentStreakDays: currentStreakDaysSeason,
+                    longestStreakDays: longestStreakDaysSeason,
+                    level: currentLevel,
+                    nextLevelAt: nextAt,
+                };
+            }
+        }
+
         // Response only relies on Entry collection
-        return NextResponse.json({
+        const resp = NextResponse.json({
             entries,
             pagination: {
                 total,
@@ -627,6 +975,8 @@ export async function GET(request) {
                 previousDateCounts,
                 nextDateCounts,
                 period,
+                seasons: SEASONS,
+                season: activeSeason ? activeSeason.key : '',
             },
             dayAggregates: {
                 totalEntries: total,
@@ -640,12 +990,30 @@ export async function GET(request) {
             leaderboards,
             globalLeaderboards,
             userProfile,
+            userSeasonProgress,
+            analytics: {
+                entriesPerDay,
+                entriesPerHour,
+                dauPerDay,
+                dauPerHour,
+                wauByWeek,
+                mauByMonth,
+                retentionBuckets,
+                streakBuckets,
+                cohortByMonth,
+            },
         });
+        resp.headers.set('X-Request-ID', reqId);
+        log.info('request_end', { total, page, limit });
+        return resp;
     } catch (error) {
+        // eslint-disable-next-line no-console
         console.error('Error fetching entries:', error);
-        return NextResponse.json(
+        const resp = NextResponse.json(
             { error: 'Failed to fetch entries', details: String(error?.message ?? error) },
             { status: 500 }
         );
+        resp.headers.set('X-Request-ID', reqId);
+        return resp;
     }
 }
