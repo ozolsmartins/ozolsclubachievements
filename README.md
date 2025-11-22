@@ -40,6 +40,11 @@ Tech stack
 - Tailwind (via @import tailwindcss in app/globals.css)
 - MongoDB with Mongoose (see lib/mongodb.js)
 
+Logging
+- The application does not store logs in its own database or files. It emits structured, single‑line JSON logs to stdout via lib/logger.js, including a requestId and route for traceability.
+- Performance timings are recorded with the timed() helper; operations exceeding SLOW_QUERY_MS (env var) are logged as slow_operation warnings.
+- In production, your hosting/platform (e.g., Docker, Kubernetes, PaaS) captures stdout/stderr and can forward logs to a centralized system (CloudWatch, ELK, Datadog, etc.). Any long‑term retention and search are provided by that external log collector.
+
 Testing
 - Unit tests use Vitest. Pure helper functions are in lib/utils.js to enable isolated tests.
 - Run tests: npm test
@@ -124,4 +129,4 @@ Roadmap ideas
 - CSV export and charting
 
 License
-- Proprietary to ozols.club
+- Proprietary to ozols.club (adjust as appropriate for your distribution needs)

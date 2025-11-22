@@ -71,7 +71,8 @@ export async function GET(request) {
         const lockId = searchParams.get('lockId') || '';
         const userId = (searchParams.get('userId') || '').trim(); // used as username filter
         const dateParam = searchParams.get('date');
-        let period = (searchParams.get('period') || 'day').toLowerCase() === 'month' ? 'month' : 'day';
+        const periodRaw = (searchParams.get('period') || 'day').toLowerCase();
+        let period = ['day', 'month', 'last7', 'last30', 'mtd'].includes(periodRaw) ? periodRaw : 'day';
         const seasonKey = (searchParams.get('season') || '').trim();
         const activeSeason = SEASONS.find(s => s.key.toLowerCase() === seasonKey.toLowerCase());
         // Parse YYYY-MM-DD as a LOCAL date to avoid UTC shifting the day
@@ -97,8 +98,26 @@ export async function GET(request) {
         }
 
         // Determine time window based on period or season
-        let rangeStart = period === 'month' ? startOfMonth(date) : startOfDay(date);
-        let rangeEnd   = period === 'month' ? endOfMonth(date)   : endOfDay(date);
+        let rangeStart, rangeEnd;
+        if (period === 'month') {
+            rangeStart = startOfMonth(date);
+            rangeEnd = endOfMonth(date);
+        } else if (period === 'last7') {
+            const now = new Date();
+            rangeEnd = endOfDay(now);
+            rangeStart = startOfDay(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000));
+        } else if (period === 'last30') {
+            const now = new Date();
+            rangeEnd = endOfDay(now);
+            rangeStart = startOfDay(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000));
+        } else if (period === 'mtd') {
+            const now = new Date();
+            rangeStart = startOfMonth(now);
+            rangeEnd = endOfDay(now);
+        } else {
+            rangeStart = startOfDay(date);
+            rangeEnd = endOfDay(date);
+        }
         let seasonActive = false;
         if (activeSeason) {
             rangeStart = activeSeason.startAt;
@@ -476,15 +495,11 @@ export async function GET(request) {
                         { $group: { _id: '$_id.u', days: { $sum: 1 } } },
                         { $project: {
                             bucket: {
-                                $switch: {
-                                    branches: [
-                                        { case: { $eq: ['$days', 1] }, then: '1' },
-                                        { case: { $and: [ { $gte: ['$days', 2] }, { $lte: ['$days', 3] } ] }, then: '2-3' },
-                                        { case: { $and: [ { $gte: ['$days', 4] }, { $lte: ['$days', 7] } ] }, then: '4-7' },
-                                        { case: { $and: [ { $gte: ['$days', 8] }, { $lte: ['$days', 15] } ] }, then: '8-15' },
-                                    ],
-                                    default: '16+',
-                                }
+                                $cond: [
+                                    { $gt: ['$days', 19] },
+                                    '20+',
+                                    { $toString: '$days' }
+                                ]
                             }
                         } },
                         { $group: { _id: '$bucket', count: { $sum: 1 } } },
@@ -561,7 +576,14 @@ export async function GET(request) {
         const mauByMonth = (aFacet.mauByMonth || []).map(x => ({ month: x._id, count: x.count }));
         const retentionBucketsRaw = Object.fromEntries((aFacet.retention || []).map(x => [x._id, x.count]));
         const streakBucketsRaw = Object.fromEntries((aFacet.streaks || []).map(x => [x._id, x.count]));
-        const retentionBuckets = { '1': 0, '2-3': 0, '4-7': 0, '8-15': 0, '16+': 0, ...retentionBucketsRaw };
+        // Build default retention buckets for discrete days 1..19 and '20+'
+        const retentionDefault = (() => {
+            const obj = {};
+            for (let i = 1; i <= 19; i++) obj[String(i)] = 0;
+            obj['20+'] = 0;
+            return obj;
+        })();
+        const retentionBuckets = { ...retentionDefault, ...retentionBucketsRaw };
         const streakBuckets = { '1': 0, '2-3': 0, '4-7': 0, '8-15': 0, '16+': 0, ...streakBucketsRaw };
 
         // Cohort: new vs returning by month for months within [rangeStart, rangeEnd]
@@ -773,8 +795,9 @@ export async function GET(request) {
                             { $group: { _id: '$d' } },
                             { $count: 'count' },
                         ],
-                        // Lifetime longest streak in days for this user (any lock)
+                        // Lifetime longest streak in days for this user (PRIMARY_LOCK only, to match leaderboards)
                         longestStreak: [
+                            { $match: { lockId: PRIMARY_LOCK } },
                             { $addFields: { day: { $dateTrunc: { date: '$entryTime', unit: 'day', timezone: timeZone } } } },
                             { $group: { _id: '$day' } },
                             { $sort: { _id: 1 } },

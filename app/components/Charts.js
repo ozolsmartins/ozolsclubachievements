@@ -211,7 +211,8 @@ export default function Charts({ analytics, lang = 'lv', meta }) {
   const streakBuckets = analytics.streakBuckets || {};
   const cohortByMonth = analytics.cohortByMonth || [];
 
-  const retentionRows = ['1', '2-3', '4-7', '8-15', '16+'].map(k => ({ bucket: k, count: retentionBuckets[k] || 0 }));
+  const retentionKeys = Array.from({ length: 19 }, (_, i) => String(i + 1)).concat(['20+']);
+  const retentionRows = retentionKeys.map(k => ({ bucket: k, count: retentionBuckets[k] || 0 }));
   const streakRows = ['1', '2-3', '4-7', '8-15', '16+'].map(k => ({ bucket: k, count: streakBuckets[k] || 0 }));
 
   const totalEntries = entriesPerDay.reduce((sum, d) => sum + Number(d.count || 0), 0);

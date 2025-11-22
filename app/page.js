@@ -88,6 +88,41 @@ error: ${errText}`}
     return `/?${buildQuery(next)}`;
   };
 
+  // Helper: translate known lock IDs to friendly names
+  const lockName = (id) => {
+    const s = String(id || '');
+    if (s === '19228015') return t('lock_gym');
+    if (s === '21920074') return t('lock_dressing');
+    return id;
+  };
+
+  // Helper: Latvian singular for 1 day
+  const dayLabel = (n) => {
+    const num = Number(n || 0);
+    if (String(lang) === 'lv' && num === 1) return t('day');
+    return t('days');
+  };
+
+  // Helper: Leaderboards day word — use singular when count is 1 or ends with digit 1 (per request)
+  const dayWordForCount = (n) => {
+    const s = String(Number(n || 0));
+    // Exception: numbers ending with '11' should NOT use singular
+    if (s.endsWith('11')) return t('days');
+    return s.endsWith('1') ? t('day') : t('days');
+  };
+
+  // Build a friendly range label for reuse (achievements, summary, charts)
+  const rangeLabel = (
+    activeSeason
+      ? (activeSeason.name || activeSeason.key)
+      : (effectivePeriod === 'month'
+          ? (initialDayISO ? new Date(initialDayISO).toLocaleDateString(undefined, { year: 'numeric', month: 'long' }) : '')
+          : (effectivePeriod === 'last7' ? t('range_last7_label')
+            : (effectivePeriod === 'last30' ? t('range_last30_label')
+              : (effectivePeriod === 'mtd' ? t('range_mtd_label')
+                : (initialDayISO ? new Date(initialDayISO).toLocaleDateString() : t('today'))))))
+  );
+
   return (
       <main className="p-6 space-y-6">
         <h1 className="text-2xl font-semibold">{t('title')}</h1>
@@ -105,31 +140,37 @@ error: ${errText}`}
           {/** The variable is inlined by reusing the same string. */}
           {!activeSeason && (
             <>
-              <div>
-                <label className="block text-sm">{effectivePeriod === 'month' ? t('month') : t('date')}</label>
-                {effectivePeriod === 'month' ? (
-                  <AutoSubmitInput
-                    type="month"
-                    name="date"
-                    defaultValue={initialMonthYM}
-                    max={thisMonthYM}
-                    className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900"
-                  />
-                ) : (
-                  <AutoSubmitInput
-                    type="date"
-                    name="date"
-                    defaultValue={initialDayISO}
-                    max={todayISO}
-                    className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900"
-                  />
-                )}
-              </div>
+              {(effectivePeriod === 'day' || effectivePeriod === 'month') && (
+                <div>
+                  <label className="block text-sm">{effectivePeriod === 'month' ? t('month') : t('date')}</label>
+                  {effectivePeriod === 'day' && (
+                    <AutoSubmitInput
+                      type="date"
+                      name="date"
+                      defaultValue={initialDayISO}
+                      max={todayISO}
+                      className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900"
+                    />
+                  )}
+                  {effectivePeriod === 'month' && (
+                    <AutoSubmitInput
+                      type="month"
+                      name="date"
+                      defaultValue={initialMonthYM}
+                      max={thisMonthYM}
+                      className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900"
+                    />
+                  )}
+                </div>
+              )}
               <div>
                 <label className="block text-sm">{t('range')}</label>
                 <AutoSubmitSelect name="period" defaultValue={effectivePeriod} className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900">
                   <option value="day">{t('range_day')}</option>
                   <option value="month">{t('range_month')}</option>
+                  <option value="last7">{t('range_last7')}</option>
+                  <option value="mtd">{t('range_mtd')}</option>
+                  <option value="last30">{t('range_last30')}</option>
                 </AutoSubmitSelect>
               </div>
             </>
@@ -148,7 +189,7 @@ error: ${errText}`}
             <AutoSubmitSelect name="lockId" defaultValue={lockId} className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900">
               <option value="">{t('all')}</option>
               {(filters?.availableLockIds ?? []).map((id) => (
-                  <option key={id} value={id}>{id}</option>
+                  <option key={id} value={id}>{lockName(id)}</option>
               ))}
             </AutoSubmitSelect>
           </div>
@@ -210,28 +251,16 @@ error: ${errText}`}
 
         {/* Summary */}
         <div className="text-sm text-gray-600">
-          {t('showing_page_of')} <strong>{pagination?.page}</strong> {t('of')} <strong>{totalPages}</strong>, {' '}
-          <strong>{pagination?.total}</strong> {t('entries_word')} {' '}
-          {t('total_entries_for')} {' '}
-          <strong>
-            {activeSeason ? (
-              `${activeSeason.name || activeSeason.key}`
-            ) : (
-              effectivePeriod === 'month'
-                ? (initialDayISO ? new Date(initialDayISO).toLocaleDateString(undefined, { year: 'numeric', month: 'long' }) : '')
-                : (initialDayISO ? new Date(initialDayISO).toLocaleDateString() : t('today'))
-            )}
-          </strong>
+          {t('summary_showing', { page: pagination?.page, pages: totalPages, total: pagination?.total, label: rangeLabel })}
           {activeSeason ? (
             <> — <span className="text-gray-500">{new Date(activeSeason.startAt).toLocaleDateString()} – {new Date(activeSeason.endAt).toLocaleDateString()}</span></>
           ) : null}
-          .
         </div>
 
         {/* Achievements (only when not searching for a specific user) */}
         {!trimmedUserId && (
           <div className="rounded border p-4 bg-gray-50 text-gray-900">
-            <h2 className="font-medium mb-2">{t('achievements_for', { period: activeSeason ? 'season' : effectivePeriod })}</h2>
+            <h2 className="font-medium mb-2">{t('achievements_for_label', { label: rangeLabel })}</h2>
             {!achievementsFromServer || (achievementsFromServer.totalEntries ?? 0) === 0 ? (
               <p className="text-sm text-gray-600">{t('achievements_none')}</p>
             ) : (
@@ -250,7 +279,7 @@ error: ${errText}`}
                 {/* Hide lock-related and hour achievements in month mode */}
                 {effectivePeriod !== 'month' && achievementsFromServer.mostUsedLock && (
                   <li>
-                    {t('most_used_lock')} <strong>{achievementsFromServer.mostUsedLock.id}</strong> ({achievementsFromServer.mostUsedLock.count})
+                    {t('most_used_lock')} <strong>{lockName(achievementsFromServer.mostUsedLock.id)}</strong> ({achievementsFromServer.mostUsedLock.count})
                   </li>
                 )}
                 {effectivePeriod !== 'month' && achievementsFromServer.busiestHour && (
@@ -267,205 +296,6 @@ error: ${errText}`}
                 )}
               </ul>
             )}
-          </div>
-        )}
-
-        {/* Leaderboards (Month or Season) and not during user search). User-centric */}
-        {effectivePeriod === 'month' && !trimmedUserId && leaderboards && (
-          <div className="rounded border p-4 bg-white text-gray-900">
-            <h2 className="font-medium mb-3">{t('leaderboard', { period: activeSeason ? 'season' : effectivePeriod })}</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {/* Top users */}
-              <div>
-                <div className="font-medium mb-1">{t('top_users')}</div>
-                {(!leaderboards.topUsers || leaderboards.topUsers.length === 0) ? (
-                  <div className="text-sm text-gray-600">{t('no_data')}</div>
-                ) : (
-                  <ol className="list-decimal ml-5 text-sm space-y-1">
-                    {leaderboards.topUsers.map(u => (
-                      <li key={u.id}>
-                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                        {' '}— {u.count} {effectivePeriod === 'month' ? t('days') : t('entries_word')}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-
-              {/* In month mode, do not show a locks leaderboard */}
-              {effectivePeriod !== 'month' && leaderboards.topLocks && (
-                <div>
-                  <div className="font-medium mb-1">{t('top_locks')}</div>
-                  {leaderboards.topLocks.length === 0 ? (
-                    <div className="text-sm text-gray-600">{t('no_data')}</div>
-                  ) : (
-                    <ol className="list-decimal ml-5 text-sm space-y-1">
-                      {leaderboards.topLocks.map(l => (
-                        <li key={l.id}>
-                          <a className="underline" href={linkWith({ lockId: l.id, page: '1' })}>{l.id}</a>
-                          {' '}— {l.count} {t('entries_word')}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              )}
-
-              {/* Top early visitors */}
-              {leaderboards.topEarlyBirds && (
-                <div>
-                  <div className="font-medium mb-1">{t('top_early')}</div>
-                  {leaderboards.topEarlyBirds.length === 0 ? (
-                    <div className="text-sm text-gray-600">{t('no_data')}</div>
-                  ) : (
-                    <ol className="list-decimal ml-5 text-sm space-y-1">
-                      {leaderboards.topEarlyBirds.map(u => (
-                        <li key={u.id}>
-                          <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                          {' '}— {u.count} {t('days')}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              )}
-
-              {/* Top night visitors */}
-              {leaderboards.topNightOwls && (
-                <div>
-                  <div className="font-medium mb-1">{t('top_night')}</div>
-                  {leaderboards.topNightOwls.length === 0 ? (
-                    <div className="text-sm text-gray-600">{t('no_data')}</div>
-                  ) : (
-                    <ol className="list-decimal ml-5 text-sm space-y-1">
-                      {leaderboards.topNightOwls.map(u => (
-                        <li key={u.id}>
-                          <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                          {' '}— {u.count} {t('days')}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              )}
-
-              {/* Longest streak in days (consecutive active days) */}
-              {leaderboards.topLongestStreaks && (
-                <div>
-                  <div className="font-medium mb-1">{t('longest_streak')}</div>
-                  {leaderboards.topLongestStreaks.length === 0 ? (
-                    <div className="text-sm text-gray-600">{t('no_data')}</div>
-                  ) : (
-                    <ol className="list-decimal ml-5 text-sm space-y-1">
-                      {leaderboards.topLongestStreaks.map(u => (
-                        <li key={u.id}>
-                          <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                          {' '}— {u.count} {t('days')}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              )}
-
-              {null}
-            </div>
-            {/* Toggle for Global Leaderboard appears under the monthly/season leaderboard, only when not searching a user */}
-            <div className="mt-4 border-t pt-3">
-              <form action="/" method="get" className="flex items-center gap-3">
-                {/* Preserve current filters */}
-                <input type="hidden" name="date" value={initialDayISO} />
-                <input type="hidden" name="period" value={effectivePeriod} />
-                {lockId ? (<input type="hidden" name="lockId" value={lockId} />) : null}
-                <input type="hidden" name="limit" value={limit} />
-                <input type="hidden" name="page" value={page} />
-                <input type="hidden" name="lang" value={lang} />
-                {/* userId intentionally omitted (no toggle in user search); here it's blank by condition */}
-                {activeSeasonKey ? (<input type="hidden" name="season" value={activeSeasonKey} />) : null}
-                <AutoSubmitCheckbox
-                  id="showGlobal2"
-                  name="showGlobal"
-                  defaultChecked={String(showGlobal) === '1'}
-                  label={t('show_global')}
-                />
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Global Leaderboard (lifetime) - shown below the monthly leaderboard area when toggled, not during user search */}
-        {String(showGlobal) === '1' && !trimmedUserId && globalLeaderboards && (
-          <div className="rounded border p-4 bg-white text-gray-900">
-            <h2 className="font-medium mb-3">{t('global_leaderboard')}</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {/* Top users (lifetime distinct active days) */}
-              <div>
-                <div className="font-medium mb-1">{t('top_users')}</div>
-                {(!globalLeaderboards.topUsers || globalLeaderboards.topUsers.length === 0) ? (
-                  <div className="text-sm text-gray-600">{t('no_data')}</div>
-                ) : (
-                  <ol className="list-decimal ml-5 text-sm space-y-1">
-                    {globalLeaderboards.topUsers.map(u => (
-                      <li key={u.id}>
-                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                        {' '}— {u.count} {t('days')}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-
-              {/* Top early visitors (days) */}
-              <div>
-                <div className="font-medium mb-1">{t('top_early')}</div>
-                {(!globalLeaderboards.topEarlyBirds || globalLeaderboards.topEarlyBirds.length === 0) ? (
-                  <div className="text-sm text-gray-600">{t('no_data')}</div>
-                ) : (
-                  <ol className="list-decimal ml-5 text-sm space-y-1">
-                    {globalLeaderboards.topEarlyBirds.map(u => (
-                      <li key={u.id}>
-                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                        {' '}— {u.count} {t('days')}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-
-              {/* Top night visitors (days) */}
-              <div>
-                <div className="font-medium mb-1">{t('top_night')}</div>
-                {(!globalLeaderboards.topNightOwls || globalLeaderboards.topNightOwls.length === 0) ? (
-                  <div className="text-sm text-gray-600">{t('no_data')}</div>
-                ) : (
-                  <ol className="list-decimal ml-5 text-sm space-y-1">
-                    {globalLeaderboards.topNightOwls.map(u => (
-                      <li key={u.id}>
-                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                        {' '}— {u.count} {t('days')}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-
-              {/* Longest streak (days) */}
-              <div>
-                <div className="font-medium mb-1">{t('longest_streak')}</div>
-                {(!globalLeaderboards.topLongestStreaks || globalLeaderboards.topLongestStreaks.length === 0) ? (
-                  <div className="text-sm text-gray-600">{t('no_data')}</div>
-                ) : (
-                  <ol className="list-decimal ml-5 text-sm space-y-1">
-                    {globalLeaderboards.topLongestStreaks.map(u => (
-                      <li key={u.id}>
-                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
-                        {' '}— {u.count} {t('days')}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-            </div>
           </div>
         )}
 
@@ -535,11 +365,11 @@ error: ${errText}`}
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">{t('current_streak')}</div>
-                          <div className="font-semibold">{userSeasonProgress.currentStreakDays ?? 0} days</div>
+                          <div className="font-semibold">{userSeasonProgress.currentStreakDays ?? 0} {dayLabel(userSeasonProgress.currentStreakDays ?? 0)}</div>
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">{t('longest_streak_days')}</div>
-                          <div className="font-semibold">{userSeasonProgress.longestStreakDays ?? 0} days</div>
+                          <div className="font-semibold">{userSeasonProgress.longestStreakDays ?? 0} {dayLabel(userSeasonProgress.longestStreakDays ?? 0)}</div>
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">{t('level')}</div>
@@ -554,6 +384,206 @@ error: ${errText}`}
           </div>
         )}
 
+        {/* Leaderboards (Month or Season). User-centric — also show when searching a user */}
+        {effectivePeriod === 'month' && leaderboards && (
+          <div className="rounded border p-4 bg-white text-gray-900">
+            <h2 className="font-medium mb-3">{t('leaderboard', { period: activeSeason ? 'season' : effectivePeriod })}</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {/* Top users */}
+              <div>
+                <div className="font-medium mb-1">{t('top_users')}</div>
+                {(!leaderboards.topUsers || leaderboards.topUsers.length === 0) ? (
+                  <div className="text-sm text-gray-600">{t('no_data')}</div>
+                ) : (
+                  <ol className="list-decimal ml-5 text-sm space-y-1">
+                    {leaderboards.topUsers.map(u => (
+                      <li key={u.id}>
+                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                        {' '}— {u.count} {effectivePeriod === 'month' ? dayWordForCount(u.count) : t('entries_word')}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+
+              {/* In month mode, do not show a locks leaderboard */}
+              {effectivePeriod !== 'month' && leaderboards.topLocks && (
+                <div>
+                  <div className="font-medium mb-1">{t('top_locks')}</div>
+                  {leaderboards.topLocks.length === 0 ? (
+                    <div className="text-sm text-gray-600">{t('no_data')}</div>
+                  ) : (
+                    <ol className="list-decimal ml-5 text-sm space-y-1">
+                      {leaderboards.topLocks.map(l => (
+                        <li key={l.id}>
+                          <a className="underline" href={linkWith({ lockId: l.id, page: '1' })}>{lockName(l.id)}</a>
+                          {' '}— {l.count} {t('entries_word')}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
+
+              {/* Top early visitors */}
+              {leaderboards.topEarlyBirds && (
+                <div>
+                  <div className="font-medium mb-1">{t('top_early')}</div>
+                  {leaderboards.topEarlyBirds.length === 0 ? (
+                    <div className="text-sm text-gray-600">{t('no_data')}</div>
+                  ) : (
+                    <ol className="list-decimal ml-5 text-sm space-y-1">
+                      {leaderboards.topEarlyBirds.map(u => (
+                        <li key={u.id}>
+                          <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                          {' '}— {u.count} {dayWordForCount(u.count)}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
+
+              {/* Top night visitors */}
+              {leaderboards.topNightOwls && (
+                <div>
+                  <div className="font-medium mb-1">{t('top_night')}</div>
+                  {leaderboards.topNightOwls.length === 0 ? (
+                    <div className="text-sm text-gray-600">{t('no_data')}</div>
+                  ) : (
+                    <ol className="list-decimal ml-5 text-sm space-y-1">
+                      {leaderboards.topNightOwls.map(u => (
+                        <li key={u.id}>
+                          <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                          {' '}— {u.count} {dayWordForCount(u.count)}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
+
+              {/* Longest streak in days (consecutive active days) */}
+              {leaderboards.topLongestStreaks && (
+                <div>
+                  <div className="font-medium mb-1">{t('longest_streak')}</div>
+                  {leaderboards.topLongestStreaks.length === 0 ? (
+                    <div className="text-sm text-gray-600">{t('no_data')}</div>
+                  ) : (
+                    <ol className="list-decimal ml-5 text-sm space-y-1">
+                      {leaderboards.topLongestStreaks.map(u => (
+                        <li key={u.id}>
+                          <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                          {' '}— {u.count} {dayWordForCount(u.count)}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
+
+              {null}
+            </div>
+            {/* Toggle for Global Leaderboard appears under the monthly/season leaderboard (also when searching a user) */}
+            <div className="mt-4 border-t pt-3">
+              <form action="/" method="get" className="flex items-center gap-3">
+                {/* Preserve current filters */}
+                <input type="hidden" name="date" value={initialDayISO} />
+                <input type="hidden" name="period" value={effectivePeriod} />
+                {lockId ? (<input type="hidden" name="lockId" value={lockId} />) : null}
+                <input type="hidden" name="limit" value={limit} />
+                <input type="hidden" name="page" value={page} />
+                <input type="hidden" name="lang" value={lang} />
+                {/* Preserve userId during search so toggling doesn't clear user context */}
+                {trimmedUserId ? (<input type="hidden" name="userId" value={trimmedUserId} />) : null}
+                {activeSeasonKey ? (<input type="hidden" name="season" value={activeSeasonKey} />) : null}
+                <AutoSubmitCheckbox
+                  id="showGlobal2"
+                  name="showGlobal"
+                  defaultChecked={String(showGlobal) === '1'}
+                  label={t('show_global')}
+                />
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Global Leaderboard (lifetime) - shown below the monthly leaderboard area when toggled */}
+        {String(showGlobal) === '1' && globalLeaderboards && (
+          <div className="rounded border p-4 bg-white text-gray-900">
+            <h2 className="font-medium mb-3">{t('global_leaderboard')}</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {/* Top users (lifetime distinct active days) */}
+              <div>
+                <div className="font-medium mb-1">{t('top_users')}</div>
+                {(!globalLeaderboards.topUsers || globalLeaderboards.topUsers.length === 0) ? (
+                  <div className="text-sm text-gray-600">{t('no_data')}</div>
+                ) : (
+                  <ol className="list-decimal ml-5 text-sm space-y-1">
+                    {globalLeaderboards.topUsers.map(u => (
+                      <li key={u.id}>
+                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                        {' '}— {u.count} {dayWordForCount(u.count)}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+
+              {/* Top early visitors (days) */}
+              <div>
+                <div className="font-medium mb-1">{t('top_early')}</div>
+                {(!globalLeaderboards.topEarlyBirds || globalLeaderboards.topEarlyBirds.length === 0) ? (
+                  <div className="text-sm text-gray-600">{t('no_data')}</div>
+                ) : (
+                  <ol className="list-decimal ml-5 text-sm space-y-1">
+                    {globalLeaderboards.topEarlyBirds.map(u => (
+                      <li key={u.id}>
+                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                        {' '}— {u.count} {dayWordForCount(u.count)}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+
+              {/* Top night visitors (days) */}
+              <div>
+                <div className="font-medium mb-1">{t('top_night')}</div>
+                {(!globalLeaderboards.topNightOwls || globalLeaderboards.topNightOwls.length === 0) ? (
+                  <div className="text-sm text-gray-600">{t('no_data')}</div>
+                ) : (
+                  <ol className="list-decimal ml-5 text-sm space-y-1">
+                    {globalLeaderboards.topNightOwls.map(u => (
+                      <li key={u.id}>
+                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                        {' '}— {u.count} {dayWordForCount(u.count)}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+
+              {/* Longest streak (days) */}
+              <div>
+                <div className="font-medium mb-1">{t('longest_streak')}</div>
+                {(!globalLeaderboards.topLongestStreaks || globalLeaderboards.topLongestStreaks.length === 0) ? (
+                  <div className="text-sm text-gray-600">{t('no_data')}</div>
+                ) : (
+                  <ol className="list-decimal ml-5 text-sm space-y-1">
+                    {globalLeaderboards.topLongestStreaks.map(u => (
+                      <li key={u.id}>
+                        <a className="underline" href={linkWith({ userId: u.id, page: '1' })}>{u.id}</a>
+                        {' '}— {u.count} {dayWordForCount(u.count)}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Table */}
         <div className="overflow-auto border rounded">
           <table className="min-w-full text-sm">
@@ -561,28 +591,24 @@ error: ${errText}`}
               <tr>
                 <th className="text-left p-2">{effectivePeriod === 'month' ? t('table_datetime') : t('table_time')}</th>
                 <th className="text-left p-2">{t('table_user')}</th>
-                <th className="text-left p-2">{t('table_fullname')}</th>
                 <th className="text-left p-2">{t('table_lock')}</th>
-                <th className="text-left p-2">{t('table_mac')}</th>
-                <th className="text-left p-2">{t('table_type')}</th>
-                <th className="text-left p-2">{t('table_battery')}</th>
               </tr>
               </thead>
-            <tbody>
+              <tbody>
             {entriesForUser.length === 0 && (
                 <tr>
-                  <td className="p-3" colSpan={7}>{t('no_entries_found')}</td>
+                  <td className="p-3" colSpan={3}>{t('no_entries_found')}</td>
                 </tr>
             )}
             {entriesForUser.map((e) => (
                 <tr key={e._id} className="border-t">
                   <td className="p-2">{e.entryTime ? (effectivePeriod === 'month' ? new Date(e.entryTime).toLocaleString() : new Date(e.entryTime).toLocaleTimeString()) : ''}</td>
                   <td className="p-2">{e.userId || e.username}</td>
-                  <td className="p-2">{e.fullName || '—'}</td>
-                  <td className="p-2">{e.lockId}</td>
-                  <td className="p-2">{e.lockMac}</td>
-                  <td className="p-2">{e.recordType}</td>
-                  <td className="p-2">{e.electricQuantity ?? '—'}</td>
+                  <td className="p-2">{/** lock name translation */}{(function(id){
+                    if (String(id) === '19228015') return t('lock_gym');
+                    if (String(id) === '21920074') return t('lock_dressing');
+                    return id;
+                  })(e.lockId)}</td>
                 </tr>
             ))}
             </tbody>
@@ -618,7 +644,7 @@ error: ${errText}`}
                 {Object.entries(filters.entryCounts).map(([id, count]) => (
                     <li key={id}>
                       <a className="underline" href={linkWith({ lockId: id, page: '1' })}>
-                        {id}
+                        {lockName(id)}
                       </a>: {count}
                     </li>
                 ))}
@@ -634,18 +660,12 @@ error: ${errText}`}
               analytics={analytics}
               lang={lang}
               meta={{
-                rangeLabel: (
-                  activeSeason
-                    ? (activeSeason.name || activeSeason.key)
-                    : (effectivePeriod === 'month'
-                        ? (initialDayISO ? new Date(initialDayISO).toLocaleDateString(undefined, { year: 'numeric', month: 'long' }) : '')
-                        : (initialDayISO ? new Date(initialDayISO).toLocaleDateString() : t('today')))
-                ),
-                // Charts are computed for the primary lock (19228015) regardless of UI lock filter
-                lockId: '19228015',
-                period: activeSeason ? 'month' : effectivePeriod
-              }}
-            />
+                  rangeLabel: rangeLabel,
+                  // Charts are computed for the primary lock (19228015) regardless of UI lock filter
+                  lockId: lockName('19228015'),
+                  period: activeSeason ? 'month' : effectivePeriod
+                }}
+              />
           </div>
         )}
       </main>
