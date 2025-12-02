@@ -36,6 +36,8 @@ function renderMarkup() {
 }
 
 describe('Accessibility (axe-core)', () => {
+  // Renders a minimal form+table page and runs axe-core against it to assert
+  // there are no critical (enabled) violations in this simplified unit context.
   it('basic form+table markup should have no critical violations', async () => {
     // Create a minimal jsdom if environment not provided
     if (typeof window === 'undefined' || typeof document === 'undefined') {

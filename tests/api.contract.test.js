@@ -60,6 +60,8 @@ describe('API contract', () => {
     process.env.SLOW_QUERY_MS = '1';
   });
 
+  // Calls the GET handler and asserts the response status, headers, and that
+  // the JSON body contains all expected top-level contract fields.
   it('returns the expected JSON structure and headers', async () => {
     const mod = await import('../app/api/route.js');
     const { GET } = mod;
@@ -84,6 +86,8 @@ describe('API contract', () => {
     expect(json.analytics).toHaveProperty('cohortByMonth');
   });
 
+  // Remocks the rate limiter to force denial and verifies the API returns 429
+  // with Retry-After header and an error body, while still setting request ID.
   it('enforces rate limiting with 429', async () => {
     vi.resetModules();
     // Remock to force rate limit denial

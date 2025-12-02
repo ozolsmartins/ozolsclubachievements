@@ -42,3 +42,6 @@ next-env.d.ts
 
 # qualification work sketches
 /docs/qualification_work
+
+# local diagram instructions (kept out of VCS)
+/docs/diagrams/
