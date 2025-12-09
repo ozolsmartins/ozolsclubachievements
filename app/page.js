@@ -10,6 +10,14 @@ import { t as tRaw } from '@/lib/i18n';
 
 export const dynamic = 'force-dynamic';
 
+// Dynamically set the browser tab title based on selected language
+export async function generateMetadata({ searchParams }) {
+  const sp = await searchParams;
+  const lang = sp?.lang ?? 'lv';
+  const title = String(lang) === 'lv' ? 'Ozols Club Sasniegumi' : 'Ozols Club Achievements';
+  return { title };
+}
+
 export default async function Page({ searchParams }) {
   // Next.js 15: searchParams is async — await before using its properties
   const sp = await searchParams;
