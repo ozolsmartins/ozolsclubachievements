@@ -41,7 +41,7 @@ describe('i18n.t', () => {
   // Performs simple variable interpolation like {label} or {season}
   it('performs simple variable interpolation', () => {
     const sEn = t('achievements_for_label', { label: 'today' }, 'en');
-    expect(sEn).toBe('Achievements (for today)');
+    expect(sEn).toBe('Achievements (today)');
 
     const sLv = t('season_progress', { season: '2025' }, 'lv');
     expect(sLv).toBe('Sezonas progress — 2025');

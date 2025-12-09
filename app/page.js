@@ -3,6 +3,7 @@ import { headers } from 'next/headers';
 import AutoSubmitSelect from './components/AutoSubmitSelect';
 import AutoSubmitCheckbox from './components/AutoSubmitCheckbox';
 import AutoSubmitInput from './components/AutoSubmitInput';
+import AutoSubmitClearableInput from './components/AutoSubmitClearableInput';
 import Charts from './components/Charts';
 import { buildQuery, formatLocalYMD } from '@/lib/utils';
 import { t as tRaw } from '@/lib/i18n';
@@ -111,12 +112,26 @@ error: ${errText}`}
     return s.endsWith('1') ? t('day') : t('days');
   };
 
+  // Helper: Localized month label (month name + year) honoring selected language
+  const formatMonthYear = (dateObj) => {
+    if (!(dateObj instanceof Date) || isNaN(dateObj)) return '';
+    const y = dateObj.getFullYear();
+    const m = dateObj.getMonth();
+    if (String(lang) === 'lv') {
+      const monthsLv = ['janvāris', 'februāris', 'marts', 'aprīlis', 'maijs', 'jūnijs', 'jūlijs', 'augusts', 'septembris', 'oktobris', 'novembris', 'decembris'];
+      return `${monthsLv[m]} ${y}`;
+    }
+    // default/en
+    const monthsEn = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${monthsEn[m]} ${y}`;
+  };
+
   // Build a friendly range label for reuse (achievements, summary, charts)
   const rangeLabel = (
     activeSeason
       ? (activeSeason.name || activeSeason.key)
       : (effectivePeriod === 'month'
-          ? (initialDayISO ? new Date(initialDayISO).toLocaleDateString(undefined, { year: 'numeric', month: 'long' }) : '')
+          ? (initialDayISO ? formatMonthYear(new Date(initialDayISO)) : '')
           : (effectivePeriod === 'last7' ? t('range_last7_label')
             : (effectivePeriod === 'last30' ? t('range_last30_label')
               : (effectivePeriod === 'mtd' ? t('range_mtd_label')
@@ -149,6 +164,7 @@ error: ${errText}`}
                       name="date"
                       defaultValue={initialDayISO}
                       max={todayISO}
+                      lang={String(lang) || 'lv'}
                       className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900"
                     />
                   )}
@@ -158,6 +174,7 @@ error: ${errText}`}
                       name="date"
                       defaultValue={initialMonthYM}
                       max={thisMonthYM}
+                      lang={String(lang) || 'lv'}
                       className="border rounded px-3 py-2 h-10 w-52 bg-white text-gray-900"
                     />
                   )}
@@ -195,8 +212,7 @@ error: ${errText}`}
           </div>
           <div>
             <label className="block text-sm">{t('user_id')}</label>
-            <input
-              type="text"
+            <AutoSubmitClearableInput
               name="userId"
               placeholder={t('user_id_placeholder')}
               defaultValue={userId}
@@ -232,7 +248,7 @@ error: ${errText}`}
                     page: '1'
                   })}
               >
-                ← {new Date(filters.previousDateCounts.date).toLocaleDateString(undefined, effectivePeriod === 'month' ? { year: 'numeric', month: 'long' } : undefined)} ({filters.previousDateCounts.count})
+                ← {effectivePeriod === 'month' ? formatMonthYear(new Date(filters.previousDateCounts.date)) : new Date(filters.previousDateCounts.date).toLocaleDateString()} ({filters.previousDateCounts.count})
               </a>
           )}
           {filters?.nextDateCounts && (
@@ -243,7 +259,7 @@ error: ${errText}`}
                     page: '1'
                   })}
               >
-                {new Date(filters.nextDateCounts.date).toLocaleDateString(undefined, effectivePeriod === 'month' ? { year: 'numeric', month: 'long' } : undefined)} ({filters.nextDateCounts.count}) →
+                {effectivePeriod === 'month' ? formatMonthYear(new Date(filters.nextDateCounts.date)) : new Date(filters.nextDateCounts.date).toLocaleDateString()} ({filters.nextDateCounts.count}) →
               </a>
           )}
         </div>
@@ -259,7 +275,7 @@ error: ${errText}`}
 
         {/* Achievements (only when not searching for a specific user) */}
         {!trimmedUserId && (
-          <div className="rounded border p-4 bg-gray-50 text-gray-900">
+          <div className="rounded border p-4 achievements">
             <h2 className="font-medium mb-2">{t('achievements_for_label', { label: rangeLabel })}</h2>
             {!achievementsFromServer || (achievementsFromServer.totalEntries ?? 0) === 0 ? (
               <p className="text-sm text-gray-600">{t('achievements_none')}</p>
@@ -301,7 +317,7 @@ error: ${errText}`}
 
         {/* User profile with lifetime achievements (shown only after search) */}
         {trimmedUserId && (
-          <div className="rounded border p-4 bg-gray-50 text-gray-900">
+          <div className="rounded border p-4 user-profile">
             <h2 className="font-medium mb-2">{t('user_profile')} “{userProfile?.username || trimmedUserId}”</h2>
             {!userProfile ? (
               <p className="text-sm text-gray-600">{t('no_user_lifetime')}</p>

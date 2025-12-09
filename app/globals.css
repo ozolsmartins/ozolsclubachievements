@@ -56,3 +56,21 @@ table thead th {
 .leaderboard * {
   color: #000000 !important;
 }
+
+/* Achievements: red background with black text */
+.achievements {
+  background-color: #FF0006 !important;
+  color: #000000 !important;
+}
+.achievements * {
+  color: #000000 !important;
+}
+
+/* User profile: red background with black text */
+.user-profile {
+  background-color: #FF0006 !important;
+  color: #000000 !important;
+}
+.user-profile * {
+  color: #000000 !important;
+}
