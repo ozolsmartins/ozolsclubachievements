@@ -216,7 +216,7 @@ error: ${errText}`}
               <option value="en">{t('lang_en')}</option>
             </AutoSubmitSelect>
           </div>
-          <button type="submit" className="px-4 py-2 rounded bg-black text-white">
+          <button type="submit" className="px-4 py-2 rounded">
             {t('apply')}
           </button>
         </form>
@@ -386,7 +386,7 @@ error: ${errText}`}
 
         {/* Leaderboards (Month or Season). User-centric — also show when searching a user */}
         {effectivePeriod === 'month' && leaderboards && (
-          <div className="rounded border p-4 bg-white text-gray-900">
+          <div className="rounded border p-4 leaderboard">
             <h2 className="font-medium mb-3">{t('leaderboard', { period: activeSeason ? 'season' : effectivePeriod })}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {/* Top users */}
@@ -510,7 +510,7 @@ error: ${errText}`}
 
         {/* Global Leaderboard (lifetime) - shown below the monthly leaderboard area when toggled */}
         {String(showGlobal) === '1' && globalLeaderboards && (
-          <div className="rounded border p-4 bg-white text-gray-900">
+          <div className="rounded border p-4 leaderboard">
             <h2 className="font-medium mb-3">{t('global_leaderboard')}</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {/* Top users (lifetime distinct active days) */}
