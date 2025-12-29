@@ -7,7 +7,6 @@ import { startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns';
 import { connectToDatabase } from '@/lib/mongodb';
 
 // In-memory Seasons catalog (can be moved to DB later)
-// Adjust keys and dates to your real seasons
 const SEASONS = [
     {
         key: '2025Q4',
@@ -24,7 +23,6 @@ const SEASONS = [
 ];
 
 // Primary lock for day-counting logic (distinct active days, first-of-day calculations)
-// Refactor requirement: only consider the first entry for this specific lock when counting days
 const PRIMARY_LOCK = '19228015';
 
 // ----- Entry model only (no Customer usage at all) -----
