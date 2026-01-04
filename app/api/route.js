@@ -65,7 +65,23 @@ export async function GET(request) {
 
         const { searchParams } = new URL(request.url);
         const page  = parseInt(searchParams.get('page')  || '1', 10);
-        const limit = parseInt(searchParams.get('limit') || '50', 10);
+        // Normalize page size to allowed dropdown values to prevent URL bypass
+        const rawLimit = parseInt(searchParams.get('limit') || '50', 10);
+        const allowedLimits = [25, 50, 100];
+        const limit = (() => {
+            const isAllowed = allowedLimits.includes(rawLimit);
+            if (isAllowed) return rawLimit;
+            // Choose nearest allowed; on ties prefer the smaller value
+            let best = allowedLimits[0];
+            let bestDiff = Math.abs(rawLimit - best);
+            for (const v of allowedLimits) {
+                const d = Math.abs(rawLimit - v);
+                if (d < bestDiff || (d === bestDiff && v < best)) {
+                    best = v; bestDiff = d;
+                }
+            }
+            return best;
+        })();
         const lockId = searchParams.get('lockId') || '';
         const userId = (searchParams.get('userId') || '').trim(); // used as username filter
         const dateParam = searchParams.get('date');

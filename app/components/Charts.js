@@ -19,27 +19,57 @@ function download(filename, dataUrl) {
   a.remove();
 }
 
-async function svgToPng(svgEl, filename) {
-  if (!svgEl) return;
+async function svgToPng(svgOrContainer, filename, opts = {}) {
+  // Accept either an <svg> element or a container that holds one
+  if (!svgOrContainer) return;
+  let svgEl = svgOrContainer;
+  if (!(svgEl instanceof SVGSVGElement)) {
+    svgEl = svgOrContainer.querySelector?.('svg') || null;
+  }
+  if (!svgEl) {
+    throw new Error('PNG export failed: No SVG element found to export.');
+  }
+
+  // Ensure xmlns attributes exist so the serialized SVG is valid
+  if (!svgEl.getAttribute('xmlns')) svgEl.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  if (!svgEl.getAttribute('xmlns:xlink')) svgEl.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
   const serializer = new XMLSerializer();
   const svgStr = serializer.serializeToString(svgEl);
   const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const img = new Image();
-  const width = svgEl.viewBox?.baseVal?.width || svgEl.clientWidth || 600;
-  const height = svgEl.viewBox?.baseVal?.height || svgEl.clientHeight || 200;
+
+  // Prefer viewBox, then client sizes as a fallback
+  const vb = svgEl.viewBox?.baseVal;
+  const width = (vb && vb.width) || svgEl.clientWidth || Number(svgEl.getAttribute('width')) || 600;
+  const height = (vb && vb.height) || svgEl.clientHeight || Number(svgEl.getAttribute('height')) || 200;
+
   await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = reject;
+    img.onload = () => resolve();
+    img.onerror = (e) => reject(new Error('PNG export failed: Could not load SVG into image.'));
     img.src = url;
   });
+
+  // Compute export size: at least Full HD by default, preserving aspect ratio
+  const minW = Number(opts.minWidth || 1920);
+  const minH = Number(opts.minHeight || 1080);
+  const scale = Math.max(minW / width, minH / height, 1);
+  const targetW = Math.round(width * scale);
+  const targetH = Math.round(height * scale);
+
   const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = targetW;
+  canvas.height = targetH;
   const ctx = canvas.getContext('2d');
+  // Improve quality for any intermediate raster operations
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  // Solid background to match on-screen charts
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, width, height);
-  ctx.drawImage(img, 0, 0, width, height);
+  ctx.fillRect(0, 0, targetW, targetH);
+  // When drawing an SVG image, browsers rasterize at the destination size – crisp output at higher res
+  ctx.drawImage(img, 0, 0, targetW, targetH);
   URL.revokeObjectURL(url);
   const dataUrl = canvas.toDataURL('image/png');
   download(filename, dataUrl);
@@ -180,7 +210,15 @@ function ChartBlock({ title, subtitle, note, rows, headers, renderSvg, t, fileKe
     URL.revokeObjectURL(url);
   };
   const onPNG = async () => {
-    await svgToPng(svgRef.current, `${fileKey}.png`);
+    try {
+      await svgToPng(svgRef.current, `${fileKey}.png`);
+    } catch (err) {
+      // Avoid unhandled promise rejections and provide a helpful message
+      console.error('[PNG Export] Error:', err);
+      try {
+        alert((err && err.message) ? err.message : 'PNG export failed.');
+      } catch {}
+    }
   };
   return (
     <div className="border rounded p-3 bg-white text-gray-900">

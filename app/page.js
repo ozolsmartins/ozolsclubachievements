@@ -24,7 +24,23 @@ export default async function Page({ searchParams }) {
   const page   = sp?.page ?? '1';
   const date   = sp?.date ?? '';
   const lockId = sp?.lockId ?? '';
-  const limit  = sp?.limit ?? '50';
+  // Normalize per-page "limit" to allowed dropdown values to avoid URL bypass
+  const allowedLimits = [25, 50, 100];
+  const rawLimitNum = Number(sp?.limit ?? '50');
+  const safeLimitNum = (() => {
+    if (allowedLimits.includes(rawLimitNum)) return rawLimitNum;
+    // choose nearest allowed; on ties prefer the smaller one
+    let best = allowedLimits[0];
+    let bestDiff = Math.abs(rawLimitNum - best);
+    for (const v of allowedLimits) {
+      const d = Math.abs(rawLimitNum - v);
+      if (d < bestDiff || (d === bestDiff && v < best)) {
+        best = v; bestDiff = d;
+      }
+    }
+    return best;
+  })();
+  const limit  = String(safeLimitNum);
   const userId = sp?.userId ?? '';
   const period = (sp?.period ?? 'day');
   const showGlobal = sp?.showGlobal ?? '';
