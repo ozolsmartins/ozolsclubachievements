@@ -117,16 +117,11 @@ Seasons & progression
 Troubleshooting
 - Ensure MONGO_URI is set and reachable; the server will throw if missing
 - If times look off by a day or hour, confirm the server’s timezone and data timestamps
-- Large datasets: MongoDB aggregations are optimized but indexes on entryTime/username/lockId will help at scale
+- Large datasets: MongoDB aggregations are optimized, but indexes on entryTime/username/lockId will help at scale
  - PostCSS/Tailwind: Next 15 requires object-map plugins in postcss.config.mjs
 
 Operations & secrets
 - See docs/SECRETS.md for environment variables, rotation, and platform guidance
 
-Roadmap ideas
-- User‑configurable timezone via env var
-- Additional achievements (e.g., weekly streaks, weekend warriors)
-- CSV export and charting
-
 License
-- Proprietary to ozols.club (adjust as appropriate for your distribution needs)
+- Proprietary to ozols.club
