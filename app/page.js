@@ -5,7 +5,7 @@ import AutoSubmitCheckbox from './components/AutoSubmitCheckbox';
 import AutoSubmitInput from './components/AutoSubmitInput';
 import AutoSubmitClearableInput from './components/AutoSubmitClearableInput';
 import Charts from './components/Charts';
-import { buildQuery, formatLocalYMD } from '@/lib/utils';
+import { buildQuery, formatLocalYMD, computeAchievements, formatDurationHM } from '@/lib/utils';
 import { t as tRaw } from '@/lib/i18n';
 
 export const dynamic = 'force-dynamic';
@@ -102,6 +102,8 @@ error: ${errText}`}
     : entries;
   // When a user is searched, the API already filters by userId and dayAggregates reflects the entire day for that user
   const userAchievements = achievementsFromServer;
+  // Use server-provided aggregates when available; otherwise, compute a lightweight fallback on the client
+  const achievementsComputed = achievementsFromServer || computeAchievements(entriesForUser || []);
   // Whether we truly have multiple pages in the current view (used for labeling)
   const showAllPagesLabel = (pagination?.totalPages ?? totalPages) > 1;
   // Today in local time, used to prevent selecting future dates in the date picker
@@ -301,37 +303,38 @@ error: ${errText}`}
         {!trimmedUserId && (
           <div className="rounded border p-4 achievements">
             <h2 className="font-medium mb-2">{t('achievements_for_label', { label: rangeLabel })}</h2>
-            {!achievementsFromServer || (achievementsFromServer.totalEntries ?? 0) === 0 ? (
+            {!achievementsComputed || (achievementsComputed.totalEntries ?? 0) === 0 ? (
               <p className="text-sm text-gray-600">{t('achievements_none')}</p>
             ) : (
               <ul className="list-disc ml-5 text-sm space-y-1">
                 <li>
-                  {t('total_entries', { suffix: showAllPagesLabel ? t('all_pages_suffix') : '' })} <strong>{achievementsFromServer.totalEntries}</strong>
+                  {t('total_entries', { suffix: showAllPagesLabel ? t('all_pages_suffix') : '' })} <strong>{achievementsComputed.totalEntries}</strong>
                 </li>
                 <li>
-                  {t('unique_users', { suffix: showAllPagesLabel ? t('all_pages_suffix') : '' })} <strong>{achievementsFromServer.uniqueUsers}</strong>
+                  {t('unique_users', { suffix: showAllPagesLabel ? t('all_pages_suffix') : '' })} <strong>{achievementsComputed.uniqueUsers}</strong>
                 </li>
-                {achievementsFromServer.mostActiveUser && (
+                {achievementsComputed.mostActiveUser && (
                   <li>
-                    {t('most_active_user')} <strong>{achievementsFromServer.mostActiveUser.id}</strong> ({achievementsFromServer.mostActiveUser.count})
+                    {t('most_active_user')} <strong>{achievementsComputed.mostActiveUser.id}</strong> ({achievementsComputed.mostActiveUser.count})
                   </li>
                 )}
                 {/* Hide lock-related and hour achievements in month mode */}
-                {effectivePeriod !== 'month' && achievementsFromServer.mostUsedLock && (
+                {effectivePeriod !== 'month' && achievementsComputed.mostUsedLock && (
                   <li>
-                    {t('most_used_lock')} <strong>{lockName(achievementsFromServer.mostUsedLock.id)}</strong> ({achievementsFromServer.mostUsedLock.count})
+                    {t('most_used_lock')} <strong>{lockName(achievementsComputed.mostUsedLock.id)}</strong> ({achievementsComputed.mostUsedLock.count})
                   </li>
                 )}
-                {effectivePeriod !== 'month' && achievementsFromServer.busiestHour && (
+                {effectivePeriod !== 'month' && achievementsComputed.busiestHour && (
                   <li>
-                    {t('busiest_hour')} <strong>{String(achievementsFromServer.busiestHour.hour).padStart(2, '0')}:00</strong> ({achievementsFromServer.busiestHour.count})
+                    {t('busiest_hour')} <strong>{String(achievementsComputed.busiestHour.hour).padStart(2, '0')}:00</strong> ({achievementsComputed.busiestHour.count})
                   </li>
                 )}
-                {(achievementsFromServer.firstEntryTime || achievementsFromServer.lastEntryTime) && (
-                  <li>
-                    {t('time_span')} {achievementsFromServer.firstEntryTime ? (effectivePeriod === 'month' ? new Date(achievementsFromServer.firstEntryTime).toLocaleString() : new Date(achievementsFromServer.firstEntryTime).toLocaleTimeString()) : '—'}
+                {(achievementsComputed.firstEntryTime || achievementsComputed.lastEntryTime) && (
+                  <li title={(achievementsComputed.firstEntryTime && achievementsComputed.lastEntryTime) ?
+                    `~${formatDurationHM(new Date(achievementsComputed.lastEntryTime).getTime() - new Date(achievementsComputed.firstEntryTime).getTime())}` : ''}>
+                    {t('time_span')} {achievementsComputed.firstEntryTime ? (effectivePeriod === 'month' ? new Date(achievementsComputed.firstEntryTime).toLocaleString() : new Date(achievementsComputed.firstEntryTime).toLocaleTimeString()) : '—'}
                     {' '}–{' '}
-                    {achievementsFromServer.lastEntryTime ? (effectivePeriod === 'month' ? new Date(achievementsFromServer.lastEntryTime).toLocaleString() : new Date(achievementsFromServer.lastEntryTime).toLocaleTimeString()) : '—'}
+                    {achievementsComputed.lastEntryTime ? (effectivePeriod === 'month' ? new Date(achievementsComputed.lastEntryTime).toLocaleString() : new Date(achievementsComputed.lastEntryTime).toLocaleTimeString()) : '—'}
                   </li>
                 )}
               </ul>

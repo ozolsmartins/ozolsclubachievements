@@ -774,12 +774,20 @@ export async function GET(request) {
                                     locks: { $addToSet: '$lockId' },
                                     early: {
                                         $sum: {
-                                            $cond: [{ $lt: [{ $hour: '$entryTime' }, 8] }, 1, 0],
+                                            $cond: [
+                                                { $lt: [ { $hour: { date: '$entryTime', timezone: timeZone } }, 8 ] },
+                                                1,
+                                                0
+                                            ],
                                         },
                                     },
                                     night: {
                                         $sum: {
-                                            $cond: [{ $gte: [{ $hour: '$entryTime' }, 22] }, 1, 0],
+                                            $cond: [
+                                                { $gte: [ { $hour: { date: '$entryTime', timezone: timeZone } }, 22 ] },
+                                                1,
+                                                0
+                                            ],
                                         },
                                     },
                                 },
